@@ -1,0 +1,134 @@
+name: Frontend CI/CD
+
+on:
+  push:
+    branches:
+      - development
+      - qa
+    tags:
+      - "0.0.0"
+  workflow_dispatch:
+
+concurrency:
+  group: frontend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Prepare pipeline variables
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.vars.outputs.environment }}
+      image-tag: ${{ steps.vars.outputs.image-tag }}
+      should-deploy-dev: ${{ steps.vars.outputs.should-deploy-dev }}
+
+    steps:
+      - name: Select environment and image tag
+        id: vars
+        run: |
+          if [ "${GITHUB_REF}" = "refs/heads/development" ]; then
+            echo "environment=development" >> "$GITHUB_OUTPUT"
+            echo "image-tag=development-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "should-deploy-dev=true" >> "$GITHUB_OUTPUT"
+          elif [ "${GITHUB_REF}" = "refs/heads/qa" ]; then
+            echo "environment=qa" >> "$GITHUB_OUTPUT"
+            echo "image-tag=qa-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "should-deploy-dev=false" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "environment=production" >> "$GITHUB_OUTPUT"
+            echo "image-tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "should-deploy-dev=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unsupported branch or tag: ${GITHUB_REF}"
+            exit 1
+          fi
+
+  build:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    needs: prepare
+    environment: ${{ needs.prepare.outputs.environment }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ${{ vars.CONTAINER_REGISTRY || 'ghcr.io' }}
+      IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY || github.repository }}
+      IMAGE_TAG: ${{ needs.prepare.outputs.image-tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Branch validation
+        run: |
+          if [ "${GITHUB_REF}" = "refs/heads/gama" ]; then
+            echo "Pipeline fails because you need to create a tag"
+            exit 1
+          fi
+
+          echo "Proceeding with the pipeline."
+
+      - name: Create .env file
+        run: echo "VITE_API_BASE_URL=${{ secrets.BASE_URL }}" > .env
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build app
+        run: npm run build
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME || github.actor }}
+          password: ${{ secrets.REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_REPOSITORY }}:${{ env.IMAGE_TAG }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_REPOSITORY }}:${{ needs.prepare.outputs.environment }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-development:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    needs:
+      - prepare
+      - build
+    if: needs.prepare.outputs.should-deploy-dev == 'true'
+    environment: development
+
+    steps:
+      - name: Deploy to development server
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.DEV_SSH_HOST }}
+          username: ${{ secrets.DEV_SSH_USER }}
+          key: ${{ secrets.DEV_SSH_KEY }}
+          port: ${{ secrets.DEV_SSH_PORT || 22 }}
+          command_timeout: 20m
+          script: /startscripts/swap-store-backoffice.sh
