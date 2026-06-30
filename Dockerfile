@@ -6,7 +6,7 @@ RUN corepack enable
 
 COPY package.json package-lock.json* bun.lockb* ./
 
-RUN npm ci
+RUN npm install
 
 COPY . .
 

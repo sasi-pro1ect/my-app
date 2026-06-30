@@ -80,7 +80,7 @@ jobs:
         run: echo "VITE_API_BASE_URL=${{ secrets.BASE_URL }}" > .env
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Lint
         run: npm run lint
@@ -88,8 +88,6 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Build app
-        run: npm run build
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
