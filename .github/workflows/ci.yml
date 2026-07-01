@@ -92,6 +92,24 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Verify registry configuration
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          echo "Registry: ${REGISTRY}"
+          echo "Image repository: ${IMAGE_REPOSITORY}"
+          echo "Image tag: ${IMAGE_TAG}"
+
+          if [ "${REGISTRY}" = "ghcr.io" ]; then
+            echo "Using default GitHub Container Registry. If you expected Azure ACR, check CONTAINER_REGISTRY organization variable access."
+          fi
+
+          if [ "${REGISTRY}" != "ghcr.io" ] && { [ -z "${REGISTRY_USERNAME}" ] || [ -z "${REGISTRY_PASSWORD}" ]; }; then
+            echo "Missing REGISTRY_USERNAME or REGISTRY_PASSWORD secrets for ${REGISTRY}."
+            exit 1
+          fi
+
       - name: Log in to container registry
         uses: docker/login-action@v3
         with:
@@ -108,6 +126,9 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_REPOSITORY }}:${{ env.IMAGE_TAG }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_REPOSITORY }}:${{ needs.prepare.outputs.environment }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
